@@ -1,10 +1,13 @@
 """上游请求构建。
 
-负责根据账号凭证选择端点、组装请求头。实际发送与流式透传在 routes/gateway.py。
+负责根据账号凭证选择端点、组装请求头与最小 body 变换。
+实际发送与流式透传在 routes/gateway.py。
 """
 
 from __future__ import annotations
 
+import base64
+import json
 import uuid
 
 from . import settings
@@ -28,6 +31,18 @@ _DROP_HEADERS = {
 def _new_id() -> str:
     """与桌面客户端一致的 trace / query / request / session id。"""
     return str(uuid.uuid4())
+
+
+def _jwt_user_id(jwt: str) -> str | None:
+    """从 HS256 JWT payload 解出 user_id（TriDefender 在 OAuth 模式注入 metadata.user_id）。"""
+    try:
+        payload = jwt.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        data = json.loads(base64.urlsafe_b64decode(payload))
+        uid = data.get("user_id")
+        return str(uid) if uid else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _official_identity_headers() -> dict:
@@ -59,6 +74,16 @@ def build_request(
     incoming_headers: dict | None = None,
 ) -> tuple[str, dict]:
     """返回 (目标 URL, 请求头)。"""
+    # TriDefender 风格：jwt 账号注入 metadata.user_id（桌面同款）
+    if account.mode == "jwt" and account.jwt_token:
+        uid = _jwt_user_id(account.jwt_token)
+        if uid:
+            meta = body.get("metadata")
+            if not isinstance(meta, dict):
+                meta = {}
+            meta["user_id"] = uid
+            body["metadata"] = meta
+
     provider = account.provider
 
     if provider == "zai":

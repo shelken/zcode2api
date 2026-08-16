@@ -60,11 +60,17 @@ def _detect_provider(body: dict, headers) -> str:
 
 
 def _normalize_body(body: dict) -> dict:
+    """TriDefender 抄法：客户端 body 透传，只加最小变换。
+
+    与桌面完全一致的部分（黄金 system 前置）由本函数保证；
+    客户端传入的 tools / thinking / output_config / tool_choice 等原样保留（不注入）。
+    """
     model = body.get("model")
     if isinstance(model, str) and "/" in model:
         model = "/".join(model.split("/")[1:])
     if isinstance(model, str):
         model = MODEL_NAME_MAP.get(model.lower(), model)
+    body["model"] = model or "GLM-5.3"
 
     messages = body.get("messages")
     if isinstance(messages, list):
@@ -74,29 +80,62 @@ def _normalize_body(body: dict) -> dict:
                 bridged.append({**msg, "content": [{"type": "text", "text": msg["content"]}]})
             else:
                 bridged.append(msg)
-        messages = bridged
+        body["messages"] = bridged
 
-    # 组装与桌面完全一致的结构，保留客户端 model / messages / stream
-    normalized = {
-        "model": model or "GLM-5.3",
-        "max_tokens": _GOLDEN_STATIC.get("max_tokens", 128000) or 128000,
-        "thinking": _GOLDEN_STATIC["thinking"],
-        "output_config": _GOLDEN_STATIC["output_config"],
-        "metadata": {
-            # 与桌面一致：user_id 是嵌套 JSON 字符串（device_id / session_id 每请求新生成）
-            "user_id": json.dumps({
-                "device_id": str(uuid.uuid4()),
-                "account_uuid": "",
-                "session_id": str(uuid.uuid4()),
-            }),
-        },
-        "system": _GOLDEN_STATIC["system"],
-        "messages": messages or [],
-        "tools": _GOLDEN_STATIC["tools"],
-        "tool_choice": _GOLDEN_STATIC["tool_choice"],
-        "stream": True,
-    }
-    return normalized
+    # 黄金 system 前置 + 客户端 system 追加 + powered-by 动态块
+    official = [dict(b) for b in _GOLDEN_STATIC["system"]]
+    if model:
+        official.append({
+            "type": "text",
+            "text": f"- You are powered by the model named {model}.",
+            "cache_control": {"type": "ephemeral"},
+        })
+    body["system"] = [*official, *_normalize_user_system(body.get("system"))]
+
+    # 最后一条非 system 消息加 cache_control（Anthropic 静默忽略低于门槛的）
+    _apply_last_cache_control(body.get("messages") or [])
+    return body
+
+
+def _normalize_user_system(system: object) -> list[dict]:
+    """客户端 system → text block 列表（字符串转 1 块，数组过滤有效 text）。"""
+    if system is None:
+        return []
+    if isinstance(system, str):
+        text = system.strip()
+        return [{"type": "text", "text": text}] if text else []
+    if not isinstance(system, list):
+        return []
+    out = []
+    for item in system:
+        if isinstance(item, str):
+            if item.strip():
+                out.append({"type": "text", "text": item})
+        elif isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
+            text = item["text"].strip()
+            if text:
+                block = {"type": "text", "text": text}
+                cc = item.get("cache_control")
+                if isinstance(cc, dict):
+                    block["cache_control"] = cc
+                out.append(block)
+    return out
+
+
+def _apply_last_cache_control(messages: list) -> None:
+    """最后一条非 system 消息的首个 text block 加 cache_control。"""
+    for msg in reversed(messages):
+        if not isinstance(msg, dict) or msg.get("role") == "system":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            msg["content"] = [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]
+            return
+        if isinstance(content, list) and content:
+            last = content[-1]
+            if isinstance(last, dict) and last.get("type") == "text" and "cache_control" not in last:
+                last["cache_control"] = {"type": "ephemeral"}
+                return
 
 
 def _is_captcha_error(text: str) -> bool:
