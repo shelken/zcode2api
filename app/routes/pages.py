@@ -3,13 +3,23 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 
 from .. import settings
+from ..oauth import _codes
 
 router = APIRouter()
 
 _TOKEN = "{{APP_VERSION}}"
+
+
+@router.get("/admin/api/login/callback", include_in_schema=False)
+async def oauth_callback(code: str, state: str):
+    """OAuth 回调（免鉴权）：浏览器授权后 redirect 回此端点，存 code 供轮询兑换。"""
+    if not code or not state:
+        return JSONResponse({"status": "failed", "message": "缺少 code/state"}, status_code=400)
+    _codes[state] = code
+    return JSONResponse({"status": "ok", "message": "授权成功，请回到后台页面查看"})
 
 
 def _html(name: str) -> HTMLResponse:

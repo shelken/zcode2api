@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 from ..auth_admin import verify_admin_key
 from ..models import PROVIDERS, Status
-from ..oauth import ZaiAuthFlow
+from ..oauth import OAUTH_REDIRECT_URI, ZaiAuthFlow
 from ..quota import fetch_quota, refresh_accounts
 from ..store import store
 

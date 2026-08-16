@@ -1,48 +1,72 @@
-"""Z.AI OAuth 登录流程。
+"""Z.AI OAuth 登录流程（桌面同款链）。
 
-主要供 CLI `login zai` 使用：发起 OAuth → 轮询 → 兑换 API Key。
+桌面实际流程（日志实证）:
+  authorize（浏览器）: GET https://chat.z.ai/api/oauth/authorize
+                      ?redirect_uri=zcode://oauth/callback
+                      &client_id=client_P8X5CMWmlaRO9gyO-KSqtg
+                      &response_type=code&state=<state>
+  回调 code → token:  POST https://zcode.z.ai/api/v1/oauth/token
+                      {provider: "zai", code, redirect_uri, state}
+                      → data.token (zcode JWT, HS256 无过期)
+
+旧的 /oauth/cli/init · /oauth/cli/poll 端点已被 Z.AI 服务端移除（404），
+故改为桌面同款链 + 本地回调端口接收 code。
 """
 
 from __future__ import annotations
 
 import secrets
+import urllib.parse
 
 import httpx
+
+OAUTH_AUTHORIZE_URL = "https://chat.z.ai/api/oauth/authorize"
+OAUTH_TOKEN_URL = "https://zcode.z.ai/api/v1/oauth/token"
+OAUTH_CLIENT_ID = "client_P8X5CMWmlaRO9gyO-KSqtg"  # 生产 client_id（asar 实证）
+# 回调走容器已映射端口（compose 3000:3000），浏览器在宿主机可直接访问
+OAUTH_REDIRECT_URI = "http://127.0.0.1:3000/admin/api/login/callback"
+
+# flow_id → 收到的 code（内存态，本机单用户足够）
+_codes: dict[str, str] = {}
+# flow_id → 兑换后的 ready 结果
+_ready: dict[str, dict] = {}
+
+# 回调 code 由 admin_api 的 /login/callback 接收（走容器 3000 端口）
 
 
 class ZaiAuthFlow:
     def __init__(self, api_base: str = "https://zcode.z.ai/api/v1") -> None:
         self.api_base = api_base
-        self.poll_token = secrets.token_hex(32)
+        # flow_id 即本地回调服务的 state（校验防伪造）
+        self.state = secrets.token_hex(32)
+
+    def build_authorize_url(self) -> str:
+        params = {
+            "redirect_uri": OAUTH_REDIRECT_URI,
+            "client_id": OAUTH_CLIENT_ID,
+            "response_type": "code",
+            "state": self.state,
+        }
+        return f"{OAUTH_AUTHORIZE_URL}?{urllib.parse.urlencode(params)}"
 
     async def init(self) -> tuple[str, str]:
-        async with httpx.AsyncClient(timeout=30) as client:
-            res = await client.post(
-                f"{self.api_base}/oauth/cli/init",
-                headers={
-                    "Authorization": f"Bearer {self.poll_token}",
-                    "Content-Type": "application/json",
-                },
-                json={"provider": "zai"},
-            )
-        res.raise_for_status()
-        data = res.json().get("data") or {}
-        flow_id, authorize_url = data.get("flow_id"), data.get("authorize_url")
-        if not flow_id or not authorize_url:
-            raise RuntimeError("返回的 OAuth 流程数据不完整")
-        return flow_id, authorize_url
+        """返回 (flow_id, authorize_url)。flow_id = state。"""
+        return self.state, self.build_authorize_url()
 
     async def poll(self, flow_id: str) -> dict:
-        async with httpx.AsyncClient(timeout=30) as client:
-            res = await client.get(
-                f"{self.api_base}/oauth/cli/poll/{flow_id}",
-                headers={"Authorization": f"Bearer {self.poll_token}"},
-            )
-        res.raise_for_status()
-        return res.json().get("data") or {}
+        """查回调是否收到 code；收到则兑换 token 并返回 ready。"""
+        code = _codes.pop(flow_id, None)
+        if not code:
+            return {"status": "pending"}
+        try:
+            token = await self.exchange_token(code)
+            _ready[flow_id] = {"status": "ready", "token": token}
+            return _ready.pop(flow_id)
+        except Exception as err:  # noqa: BLE001
+            return {"status": "failed", "message": str(err)}
 
     async def exchange_api_key(self, access_token: str) -> str:
-        """OAuth access_token → 业务 token → 机构/项目 → API Key。"""
+        """OAuth access_token → 业务 token → 机构/项目 → API Key（回退用）。"""
         async with httpx.AsyncClient(timeout=30) as client:
             login = await client.post(
                 "https://api.z.ai/api/auth/z/login",
@@ -98,3 +122,23 @@ class ZaiAuthFlow:
             if not secret_key:
                 raise RuntimeError("未能解密 Secret Key")
         return f"{api_key}.{secret_key}"
+
+    async def exchange_token(self, code: str, state: str | None = None) -> str:
+        """code → zcode JWT。state 默认用本 flow 的，回调场景可传入匹配的 flow state。"""
+        async with httpx.AsyncClient(timeout=30) as client:
+            res = await client.post(
+                OAUTH_TOKEN_URL,
+                headers={"Content-Type": "application/json"},
+                json={
+                    "provider": "zai",
+                    "code": code,
+                    "redirect_uri": OAUTH_REDIRECT_URI,
+                    "state": state or self.state,
+                },
+            )
+        res.raise_for_status()
+        data = res.json().get("data") or {}
+        token = data.get("token")
+        if not token:
+            raise RuntimeError(f"token 兑换失败: {res.text[:200]}")
+        return token
