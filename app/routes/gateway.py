@@ -263,9 +263,10 @@ async def _try_account(req_id, account, body, payload, incoming_headers, port, n
             await cm.__aexit__(None, None, None)
             await client.aclose()
 
-            if status_code == 403 and _is_captcha_error(text) and needs_captcha:
+            # 3007/403 captcha 失败：验证码一次性失效，刷新生效重试同账号
+            if status_code in (400, 403) and _is_captcha_error(text) and needs_captcha:
                 captcha_manager.invalidate()
-                logs.warn(req_id, f"账号 {account.name} 验证码失效，刷新重试")
+                logs.warn(req_id, f"账号 {account.name} 验证码失效(HTTP {status_code})，刷新重试")
                 continue  # 同账号重试验证码
 
             if _is_exhausted(status_code, text):

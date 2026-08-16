@@ -49,19 +49,14 @@ class CaptchaManager:
 
     # ── 求解 ─────────────────────────────────────────────────────────────────
     async def get_verify_param(self, port: int | None = None) -> str:
-        now = time.time() * 1000
-        if self._cached and now - self._cached_at < settings.CAPTCHA_CACHE_TTL:
-            return self._cached
+        """每次请求都求解全新的 VerifyParam。
 
+        Aliyun 无痕验证产物严格一次性：验证一次即失效，复用会 3007。
+        因此不做 TTL 缓存；仅用锁串行化求解，避免同刻并发解出同一 token。
+        """
         async with self._lock:
-            # 二次检查：等锁期间可能已被其他请求填充
-            if self._cached and time.time() * 1000 - self._cached_at < settings.CAPTCHA_CACHE_TTL:
-                return self._cached
-
             config = await self.fetch_config()
             param = await self._solve(config)
-            self._cached = param
-            self._cached_at = time.time() * 1000
             return param
 
     async def _solve(self, config: dict) -> str:
