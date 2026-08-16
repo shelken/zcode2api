@@ -11,3 +11,6 @@ data_test/
 
 .env
 js-code/
+
+# 黄金参照（含真实 JWT，仅本地 dry-run 用，禁止提交）
+reference/golden-request.json

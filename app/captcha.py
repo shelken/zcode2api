@@ -35,7 +35,7 @@ class CaptchaManager:
             async with httpx.AsyncClient(timeout=15) as client:
                 res = await client.get(
                     "https://zcode.z.ai/api/v1/client/configs"
-                    "?app_version=3.0.0&platform=win32"
+                    "?app_version=3.7.7&platform=darwin-arm64"
                 )
             res.raise_for_status()
             captcha = ((res.json().get("data") or {}).get("configs") or {}).get("captcha")

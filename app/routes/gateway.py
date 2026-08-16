@@ -9,6 +9,8 @@ import asyncio
 import json
 import secrets
 import time
+import uuid
+from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, Depends, Request
@@ -27,6 +29,12 @@ router = APIRouter()
 MAX_CAPTCHA_RETRIES = 3
 MAX_ACCOUNT_ATTEMPTS = 5
 
+# 黄金 body 静态部分（桌面真实请求：system 3 块 + 24 tools + thinking 等）
+# 客户端只传 model / messages，其余字段由网关按与桌面完全一致的结构组装。
+_GOLDEN_STATIC = json.loads(
+    (Path(__file__).resolve().parents[2] / "reference" / "golden-body-static.json").read_text()
+)
+
 # Z.AI 上游模型名大小写敏感
 MODEL_NAME_MAP = {
     "glm-5.2": "GLM-5.2",
@@ -34,10 +42,11 @@ MODEL_NAME_MAP = {
     "glm-turbo": "GLM-5-Turbo",
     "glm-5.1": "GLM-5.1",
     "glm-4.7": "GLM-4.7",
+    "glm-5.3": "GLM-5.3",
 }
 
 # /v1/models 对外公布的可用模型
-AVAILABLE_MODELS = ["GLM-5.2", "GLM-5-Turbo"]
+AVAILABLE_MODELS = ["GLM-5.2", "GLM-5-Turbo", "GLM-5.3"]
 
 # 命中以下信号则认为账号额度用完
 _EXHAUST_KEYWORDS = ("quota", "insufficient", "balance", "exhaust", "额度", "余额不足")
@@ -56,7 +65,6 @@ def _normalize_body(body: dict) -> dict:
         model = "/".join(model.split("/")[1:])
     if isinstance(model, str):
         model = MODEL_NAME_MAP.get(model.lower(), model)
-        body["model"] = model
 
     messages = body.get("messages")
     if isinstance(messages, list):
@@ -66,8 +74,29 @@ def _normalize_body(body: dict) -> dict:
                 bridged.append({**msg, "content": [{"type": "text", "text": msg["content"]}]})
             else:
                 bridged.append(msg)
-        body["messages"] = bridged
-    return body
+        messages = bridged
+
+    # 组装与桌面完全一致的结构，保留客户端 model / messages / stream
+    normalized = {
+        "model": model or "GLM-5.3",
+        "max_tokens": _GOLDEN_STATIC.get("max_tokens", 128000) or 128000,
+        "thinking": _GOLDEN_STATIC["thinking"],
+        "output_config": _GOLDEN_STATIC["output_config"],
+        "metadata": {
+            # 与桌面一致：user_id 是嵌套 JSON 字符串（device_id / session_id 每请求新生成）
+            "user_id": json.dumps({
+                "device_id": str(uuid.uuid4()),
+                "account_uuid": "",
+                "session_id": str(uuid.uuid4()),
+            }),
+        },
+        "system": _GOLDEN_STATIC["system"],
+        "messages": messages or [],
+        "tools": _GOLDEN_STATIC["tools"],
+        "tool_choice": _GOLDEN_STATIC["tool_choice"],
+        "stream": True,
+    }
+    return normalized
 
 
 def _is_captcha_error(text: str) -> bool:
