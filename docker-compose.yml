@@ -1,7 +1,9 @@
 services:
   zcode2api:
+    # 双模式：`docker compose up -d` 拉取 GHCR 远程镜像；
+    # `docker compose up -d --build` 本地构建同名镜像并优先使用。
+    image: ghcr.io/shelken/zcode2api:latest
     build: .
-    image: zcode2api:latest
     container_name: zcode2api
     ports:
       - "3000:3000"
