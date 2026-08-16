@@ -246,15 +246,24 @@ async def _try_account(req_id, account, body, payload, incoming_headers, port, n
             logs.warn(req_id, f"账号 {account.name} 凭证无效，切换下一个")
             return _NEXT_ACCOUNT
 
-        client = httpx.AsyncClient(timeout=httpx.Timeout(connect=30.0, read=None, write=120.0, pool=30.0))
-        cm = client.stream("POST", url, headers=headers, content=payload)
-        try:
-            resp = await cm.__aenter__()
-        except httpx.HTTPError as err:
-            await client.aclose()
-            # 连接失败多为网络瞬断，短冷却即可；限流 429 才用完整冷却时长
-            _mark(account, Status.COOLING, f"连接失败: {err}", cooling_seconds=15)
-            logs.warn(req_id, f"账号 {account.name} 连接失败({err})，{15}s 后重试")
+        resp = None
+        cm = None
+        client = None
+        last_err: Exception | None = None
+        # 网络瞬断：同账号快速重试，避免单账号场景直接 503
+        for _ in range(3):
+            client = httpx.AsyncClient(timeout=httpx.Timeout(connect=30.0, read=None, write=120.0, pool=30.0))
+            cm = client.stream("POST", url, headers=headers, content=payload)
+            try:
+                resp = await cm.__aenter__()
+                break
+            except httpx.HTTPError as err:
+                last_err = err
+                await client.aclose()
+                await asyncio.sleep(1)
+        if resp is None:
+            _mark(account, Status.COOLING, f"连接失败: {last_err!r}", cooling_seconds=15)
+            logs.warn(req_id, f"账号 {account.name} 连接失败({last_err!r})，冷却 15s")
             return _NEXT_ACCOUNT
 
         status_code = resp.status_code
