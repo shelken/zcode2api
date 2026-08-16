@@ -150,11 +150,11 @@ def _is_exhausted(status_code: int, text: str) -> bool:
     return any(k in low for k in _EXHAUST_KEYWORDS)
 
 
-def _mark(account: Account, status_value: str, error: str | None = None) -> None:
+def _mark(account: Account, status_value: str, error: str | None = None, cooling_seconds: int | None = None) -> None:
     account.status = status_value
     account.last_error = error
     if status_value == Status.COOLING:
-        account.cooling_until = time.time() + settings.COOLING_SECONDS
+        account.cooling_until = time.time() + (cooling_seconds or settings.COOLING_SECONDS)
     store.update_account(account)
 
 
@@ -252,8 +252,9 @@ async def _try_account(req_id, account, body, payload, incoming_headers, port, n
             resp = await cm.__aenter__()
         except httpx.HTTPError as err:
             await client.aclose()
-            _mark(account, Status.COOLING, f"连接失败: {err}")
-            logs.warn(req_id, f"账号 {account.name} 连接失败，切换下一个")
+            # 连接失败多为网络瞬断，短冷却即可；限流 429 才用完整冷却时长
+            _mark(account, Status.COOLING, f"连接失败: {err}", cooling_seconds=15)
+            logs.warn(req_id, f"账号 {account.name} 连接失败({err})，{15}s 后重试")
             return _NEXT_ACCOUNT
 
         status_code = resp.status_code
