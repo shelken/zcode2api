@@ -34,16 +34,19 @@ async def fetch_quota(account: Account) -> dict:
     result: dict = {}
 
     async with httpx.AsyncClient(timeout=20) as client:
-        async def _get(path: str):
+        async def _get(path: str, request_headers: dict):
             try:
-                return await client.get(f"{base}{path}", headers=headers)
+                return await client.get(f"{base}{path}", headers=request_headers)
             except httpx.HTTPError:
                 return None
 
         billing_res, balance_res, usage_res = await asyncio.gather(
-            _get("/billing/current"),
-            _get("/billing/balance"),
-            _get("/usage"),
+            _get("/billing/current", headers),
+            _get(
+                "/billing/balance",
+                {**headers, "X-Zcode-App-Version": settings.ZCODE_APP_VERSION},
+            ),
+            _get("/usage", headers),
         )
 
     now = time.time()

@@ -53,7 +53,7 @@ def _official_identity_headers() -> dict:
     带多了反而不一致。
     """
     return {
-        "X-Zcode-App-Version": "3.7.7",
+        "X-Zcode-App-Version": settings.ZCODE_APP_VERSION,
         "X-Zcode-Agent": "glm",
         "X-Title": "Z Code@electron",
         "HTTP-Referer": "https://zcode.z.ai",

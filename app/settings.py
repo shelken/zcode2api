@@ -80,6 +80,7 @@ UPSTREAM = {
 
 # ZCode 计费 / 额度查询端点
 ZCODE_BILLING_BASE = "https://zcode.z.ai/api/v1/zcode-plan"
+ZCODE_APP_VERSION = "3.7.7"
 
 USER_AGENT = os.getenv("UPSTREAM_USER_AGENT", "ZCode/3.0.1")
 APP_VERSION = "2.0.0"

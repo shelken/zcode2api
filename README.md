@@ -108,6 +108,7 @@ python main.py quota                               # 查看各账号实时额度
 python main.py status                              # 查看配置概览
 python main.py set-admin-key <key>                 # 设置后台密码
 python main.py export [file] / import <file>       # 导出 / 导入账号
+python scripts/probe_start_plan.py                 # 调试 Start Plan 自动发放
 ```
 
 ## 环境变量
